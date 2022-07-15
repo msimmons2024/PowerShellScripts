@@ -114,3 +114,4 @@ do
 Write-Host "Disabling anti idle measures, and exiting!"
 
 [ThreadModule.ThreadManagement]::SetThreadExecutionState([ThreadModule.ExecutionState]::ES_CONTINUOUS)
+
