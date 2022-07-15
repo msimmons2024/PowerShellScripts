@@ -1,54 +1,3 @@
-﻿$scriptName = "AntiIdle.ps1"
-
-function ScriptName() { return $MyInvocation.ScriptName; }
-if ($PSCommandPath -eq $null) { function GetPSCommandPath() { return $MyInvocation.PSCommandPath; } $PSCommandPath = GetPSCommandPath; }
-if ([String]::IsNullOrEmpty($PSCommandPath))
-{
-    $PSCommandPath = "$([System.Environment]::CurrentDirectory)\$($scriptName)"
-}
-
-Function Write-Log
-{
-	
-	Param (
-		[string]$text
-	)
-	
-	Write-Host "$(Get-Date) $($text)"
-	
-	if ($LogPath -ne $null)
-	{
-		"$(Get-Date) $($text)" | Out-File $LogPath -Append
-	}
-	
-	
-}
-
-Function Verify-Directory
-{
-	Param (
-		[string]$fileFullPath,
-		[switch]$CreateIfMissing = $true
-	)
-	
-	$dirPath = [System.IO.Path]::GetDirectoryName($fileFullPath)
-	
-	if (!(Test-Path $dirPath))
-	{
-		if ($CreateIfMissing)
-		{
-			New-Item -ItemType Directory $dirPath
-			Write-Log "Creating missing directory: $($dirPath)"
-			return $true
-		}
-		return $false
-	}
-	else
-	{
-		return "Directory $($dirPath) exists"
-	}
-}
-
 Add-Type -TypeDefinition @"
  using System;
  using System.Diagnostics;
@@ -56,6 +5,11 @@ Add-Type -TypeDefinition @"
 
 namespace ThreadModule
 {
+    public struct LASTINPUTINFO 
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
     public enum ExecutionState : uint
     {
         ES_AWAYMODE_REQUIRED = 0x00000040,
@@ -71,29 +25,92 @@ namespace ThreadModule
         [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         public static extern ExecutionState SetThreadExecutionState(ExecutionState esFlags);
 
+        [DllImport("User32.dll")]
+        private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);        
 
+        [DllImport("Kernel32.dll")]
+        private static extern uint GetLastError();
+
+        public static uint GetIdleTime()
+        {
+            LASTINPUTINFO lastInPut = new LASTINPUTINFO();
+            lastInPut.cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf(lastInPut);
+            GetLastInputInfo(ref lastInPut);
+
+            return ((uint)Environment.TickCount - lastInPut.dwTime);
+        }
+    /// <summary>
+    /// Get the Last input time in milliseconds
+    /// </summary>
+    /// <returns></returns>
+        public static long GetLastInputTime()
+        {
+            LASTINPUTINFO lastInPut = new LASTINPUTINFO();
+            lastInPut.cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf(lastInPut);
+            if (!GetLastInputInfo(ref lastInPut))
+            {
+                throw new Exception(GetLastError().ToString());
+            }       
+            return lastInPut.dwTime;
+        }
     }
 }
 "@
 
 
-$LogPath = "$($PSCommandPath)_log\$(get-date -f "yyyy-MM-dd_hh-mm_tt").log"
-$TranscriptPath = "$($PSCommandPath)_log\transcript_$(get-date -f "yyyy-MM-dd_hh-mm_tt").log"
-
-
-Verify-Directory $LogPath
-Verify-Directory $TranscriptPath
-
-Start-Transcript $TranscriptPath
-
-Write-Log "Enabling anti idle measures!"
-
+Add-Type -AssemblyName System.Windows.Forms
+for ($i = 0; $i -lt 9; $i++)
+{
+    Write-Host ""
+}
+Write-Host "Enabling anti idle measures! Thread state now set to: " -NoNewline
 [ThreadModule.ThreadManagement]::SetThreadExecutionState([ThreadModule.ExecutionState]::ES_CONTINUOUS + [ThreadModule.ExecutionState]::ES_DISPLAY_REQUIRED)
+Write-Host "Press any key to exit: "
+$Pos = [System.Windows.Forms.Cursor]::Position
+$PosDelta = 1
+$closeScript = $true
+$maxTimeInSeconds = 300
+$wshell = New-Object -ComObject wscript.shell
+do
+{
+    if ([Console]::KeyAvailable)
+    {
+        $key = [Console]::ReadKey();
+        if ($key.key -eq 'F15')
+        {
+        }
+        else
+        {
+            $closeScript = $false
+        }
+    }
+    else
+    {
+        $lastInputTime = [ThreadModule.ThreadManagement]::GetIdleTime()
+        $time = New-TimeSpan -Seconds ( $lastInputTime / 1000 )
+        if ($time.TotalSeconds -gt $maxTimeInSeconds)
+        {
+            Write-Host "$(Get-Date) Generating activity, Press any key to exit:"
+            $outlookTitle = Get-Process -Name *outlook* | select mainwindowtitle
+            $teamsTitle = Get-Process -Name *teams* | where { $_.MainWindowTitle -ne '' } | select mainwindowtitle
+            Write-Host "Outlook: $($outlookTitle.MainWindowTitle)"
+            $appResult = $wshell.AppActivate("$($outlookTitle.MainWindowTitle)")
+            Write-Host "Teams: $($teamsTitle.MainWindowTitle)"
+            $appResult = $wshell.AppActivate("$($teamsTitle.MainWindowTitle)")
+            $wshell.SendKeys("{F15}")
+            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point((($Pos.X) + $PosDelta) , $Pos.Y)
+            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point((($Pos.X) - $PosDelta) , $Pos.Y)
+        }
+        else
+        {
+            Write-Progress -Activity "Waiting to generate activity, press any key to exit. Time since last input $($time.Duration())" -Status $true -PercentComplete ($time.TotalSeconds/$maxTimeInSeconds*100) -SecondsRemaining ($maxTimeInSeconds-$time.TotalSeconds)
+        }
+        Start-Sleep -Seconds 1
+    }
 
-$result = Read-Host "Press any key to disable anti idle and exit the script!"
 
-Write-Log "Disabling anti idle measures, and exiting!"
+} while ($closeScript)
+
+Write-Host "Disabling anti idle measures, and exiting!"
 
 [ThreadModule.ThreadManagement]::SetThreadExecutionState([ThreadModule.ExecutionState]::ES_CONTINUOUS)
-
-Stop-Transcript
